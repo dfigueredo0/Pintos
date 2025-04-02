@@ -1,0 +1,25 @@
+Tests included in PA2_2:
+- Test argument passing on Pintos command line.
+3	args-none
+3	args-single
+3	args-multiple
+3	args-many
+3	args-dbl-space
+
+- Test "exit" system call.
+5	exit
+
+- Test robustness of system call implementation.
+3	sc-bad-arg
+3	sc-bad-sp
+5	sc-boundary
+5	sc-boundary-2
+
+- Test robustness of exception handling.
+1	bad-jump
+1	bad-read
+1	bad-write
+1	bad-read2
+1	bad-write2
+1	bad-jump2
+	
