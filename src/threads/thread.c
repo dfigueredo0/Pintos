@@ -204,6 +204,66 @@ thread_create (const char *name, int priority,
   return tid;
 }
 
+tid_t
+thread_create_report (const char *name, int priority,
+                      thread_func *function, void *aux) 
+{
+  struct thread *t;
+  struct kernel_thread_frame *kf;
+  struct switch_entry_frame *ef;
+  struct switch_threads_frame *sf;
+  struct thread *lp;
+  struct list_elem *e;
+  int tc = 0;
+  tid_t tid;
+
+  ASSERT (function != NULL);
+
+  /* Allocate thread. */
+  t = palloc_get_page (PAL_ZERO);
+  if (t == NULL)
+    return TID_ERROR;
+
+  /* Initialize thread. */
+  init_thread (t, name, priority);
+  tid = t->tid = allocate_tid ();
+
+  /* Stack frame for kernel_thread(). */
+  kf = alloc_frame (t, sizeof *kf);
+  kf->eip = NULL;
+  kf->function = function;
+  kf->aux = aux;
+
+  /* Stack frame for switch_entry(). */
+  ef = alloc_frame (t, sizeof *ef);
+  ef->eip = (void (*) (void)) kernel_thread;
+
+  /* Stack frame for switch_threads(). */
+  sf = alloc_frame (t, sizeof *sf);
+  sf->eip = switch_entry;
+  sf->ebp = 0;
+
+  /* Count number of threads */
+  for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e)) {
+    struct thread *c = list_entry(e, struct thread, allelem);
+    if (c == idle_thread)
+      continue;
+    tc++;
+    if (c->priority < lp->priority) {
+      lp = c;
+    }
+  }
+
+  /* Prints thread count and name of the lowest priority thread */
+  printf ("number of threads: %d\n", tc);
+  printf ("thread with lowest priority: %s\n", lp->name);
+
+  /* Add to run queue. */
+  thread_unblock (t);
+
+  return tid;
+}
+
 /* Puts the current thread to sleep.  It will not be scheduled
    again until awoken by thread_unblock().
 
