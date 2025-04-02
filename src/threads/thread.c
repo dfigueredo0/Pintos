@@ -201,6 +201,8 @@ thread_create (const char *name, int priority,
   /* Add to run queue. */
   thread_unblock (t);
 
+  if (t->priority > thread_current()->priority) { thread_yield(); }
+
   return tid;
 }
 
@@ -280,6 +282,15 @@ thread_block (void)
   schedule ();
 }
 
+/* Compare priority of the thread being added to the ready list with that of the 
+   running thread (preemptive) */
+bool
+priority_compare (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{ 
+  return list_entry(a, struct thread, elem)->priority > list_entry(b, struct thread, elem)->priority;
+}
+
+
 /* Transitions a blocked thread T to the ready-to-run state.
    This is an error if T is not blocked.  (Use thread_yield() to
    make the running thread ready.)
@@ -288,17 +299,25 @@ thread_block (void)
    be important: if the caller had disabled interrupts itself,
    it may expect that it can atomically unblock a thread and
    update other data. */
-void
-thread_unblock (struct thread *t) 
-{
+  void
+  thread_unblock (struct thread *t) 
+  {
   enum intr_level old_level;
-
+   
   ASSERT (is_thread (t));
-
+   
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  list_insert_ordered (&ready_list, &t->elem, priority_compare, NULL); // modified to have a sorted list by priorities
   t->status = THREAD_READY;
+   
+  /* yields if thread getting unblocked has a higher priority than current running thread*/
+  if (t->priority > thread_current()->priority) {
+    if (intr_context()) {
+      intr_yield_on_return();
+    }
+  }
+   
   intr_set_level (old_level);
 }
 
@@ -363,12 +382,12 @@ thread_yield (void)
 {
   struct thread *cur = thread_current ();
   enum intr_level old_level;
-  
+     
   ASSERT (!intr_context ());
-
+   
   old_level = intr_disable ();
-  if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+  if (cur != idle_thread)  
+    list_insert_ordered(&ready_list, &cur->elem, priority_compare, NULL); // modified to have the ready list be sorted based on priority
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -391,11 +410,22 @@ thread_foreach (thread_action_func *func, void *aux)
     }
 }
 
-/* Sets the current thread's priority to NEW_PRIORITY. */
+/* Sets the current thread's priority to NEW_PRIORITY and check 
+   other threads' priorities. If a higher one is found, yield to them. */
 void
 thread_set_priority (int new_priority) 
 {
   thread_current ()->priority = new_priority;
+
+  list_sort(&ready_list, priority_compare, NULL);
+
+  if (!list_empty(&ready_list)) {
+    struct thread *highest_priority = list_entry(list_front(&ready_list), struct thread, elem);
+
+    if(highest_priority->priority >= new_priority) {
+      thread_yield();
+    }
+  }
 }
 
 /* Returns the current thread's priority. */
