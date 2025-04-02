@@ -18,8 +18,10 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
+#define MAX_ARGS 128
+
 static thread_func start_process NO_RETURN;
-static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static bool load (const char *cmdline, void (**eip) (void), void **esp, int argc, char **argv);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -28,20 +30,29 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *file_name) 
 {
-  char *fn_copy;
+  char *fn_copy, *cmd_copy;
+  char *save_ptr;
+  char *prog_name;
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
-  if (fn_copy == NULL)
+  cmd_copy = palloc_get_page (0);
+  if (fn_copy == NULL || cmd_copy == NULL)
     return TID_ERROR;
+
   strlcpy (fn_copy, file_name, PGSIZE);
+  strlcpy (cmd_copy, file_name, PGSIZE);
+
+  prog_name = strtok_r (cmd_copy, " ", &save_ptr);
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (prog_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
+
+  palloc_free_page (cmd_copy); 
   return tid;
 }
 
@@ -51,18 +62,31 @@ static void
 start_process (void *file_name_)
 {
   char *file_name = file_name_;
+  char *args_copy = palloc_get_page(0);
+  char *token, *save_ptr;
+  char *argv[MAX_ARGS];
+  int argc = 0;
+
   struct intr_frame if_;
   bool success;
+
+  strlcpy(args_copy, file_name, PGSIZE);
+
+  for (token = strtok_r(args_copy, " ", &save_ptr); token != NULL; token = strtok_r(NULL, " ", &save_ptr)) {
+    argv[argc++] = token;
+  }
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+  success = load (argv[0], &if_.eip, &if_.esp, argc, argv);
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
+  palloc_free_page (args_copy);
+
   if (!success) 
     thread_exit ();
 
@@ -88,7 +112,15 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  return -1;
+  // temp so kernel does not quit immediately.
+  while (true) { 
+    if (thread_current()->exit_status != -1)
+    {
+      timer_msleep(2000);
+      return thread_current()->exit_status;
+    }
+    thread_yield();
+  }; 
 }
 
 /* Free the current process's resources. */
@@ -194,7 +226,7 @@ struct Elf32_Phdr
 #define PF_W 2          /* Writable. */
 #define PF_R 4          /* Readable. */
 
-static bool setup_stack (void **esp);
+static bool setup_stack (void **esp, int argc, char **argv);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
@@ -205,7 +237,7 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
 bool
-load (const char *file_name, void (**eip) (void), void **esp) 
+load (const char *file_name, void (**eip) (void), void **esp, int argc, char **argv) 
 {
   struct thread *t = thread_current ();
   struct Elf32_Ehdr ehdr;
@@ -308,6 +340,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
   *eip = (void (*) (void)) ehdr.e_entry;
 
   success = true;
+
+  if (success)
+    hex_dump((uintptr_t)*esp, *esp, (uintptr_t)PHYS_BASE - (uintptr_t)*esp, true);
 
  done:
   /* We arrive here whether the load is successful or not. */
@@ -434,10 +469,49 @@ setup_stack (void **esp)
   if (kpage != NULL) 
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success)
+      if (success) {
         *esp = PHYS_BASE;
-      else
+        char *arg_ptrs[MAX_ARGS];
+        
+        /* Pushing arg strings */
+        for (int i = argc - 1; i >= 0; i--) {
+          size_t len = strlen(argv[i]) + 1;
+          *esp -= len;
+          memcpy(*esp, argv[i], len);
+          arg_ptrs[i] = *esp;
+        }
+
+        /* Align Stack to 4-byte Boundary */
+        *esp = (void *)((uintptr_t)*esp & 0xfffffffc);
+
+        /* Null Sentinel */
+        *esp -= sizeof(char *);
+        *(char **)*esp = NULL;
+
+        /* Push pinters to args */
+        for (int i = argc - 1; i >= 0; i--) {
+          *esp -= sizeof(char *);
+          *(char **)*esp = arg_ptrs[i];
+        }
+
+        /* Save Address*/
+        char **argv_addr = *esp;
+
+        /* Push argv ptr */
+        *esp -= sizeof(char **);
+        *(char ***)*esp = argv_addr;
+
+        /* Push argc */
+        *esp -= sizeof(int);
+        *(int *)*esp = argc;
+
+        /* Fake reutrn address */
+        *esp -= sizeof(void *);
+        *(void **)*esp = 0;
+
+      } else {
         palloc_free_page (kpage);
+      }
     }
   return success;
 }
