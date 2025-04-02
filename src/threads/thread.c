@@ -98,6 +98,9 @@ thread_init (void)
   init_thread (initial_thread, "main", PRI_DEFAULT);
   initial_thread->status = THREAD_RUNNING;
   initial_thread->tid = allocate_tid ();
+  initial_thread->priority = PRI_DEFAULT;
+  initial_thread->base_priority = PRI_DEFAULT;
+  initial_thread->waiting_lock =NULL;
 }
 
 /* Starts preemptive thread scheduling by enabling interrupts.
@@ -200,6 +203,11 @@ thread_create (const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock (t);
+
+  t->priority = priority;
+  t->base_priority = priority;
+
+  t->waiting_lock = NULL;
 
   if (t->priority > thread_current()->priority) { thread_yield(); }
 
@@ -415,8 +423,12 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  struct thread *cur = thread_current();
+  cur->base_priority = new_priority;
 
+  if(list_empty(&cur->donations)) {
+    cur->priority = new_priority;
+  }
   list_sort(&ready_list, priority_compare, NULL);
 
   if (!list_empty(&ready_list)) {
@@ -540,18 +552,21 @@ static void
 init_thread (struct thread *t, const char *name, int priority)
 {
   enum intr_level old_level;
-
+   
   ASSERT (t != NULL);
   ASSERT (PRI_MIN <= priority && priority <= PRI_MAX);
   ASSERT (name != NULL);
-
+   
   memset (t, 0, sizeof *t);
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+  t->base_priority = priority;
   t->magic = THREAD_MAGIC;
-
+  t->waiting_lock = NULL;
+  list_init(&t->donations);
+   
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
   intr_set_level (old_level);
