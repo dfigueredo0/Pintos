@@ -71,6 +71,14 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+void acquire_lock_f(){
+  lock_acquire(&lock_f);
+}
+
+void release_lock_f(){
+  lock_release(&lock_f);
+}
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -90,6 +98,7 @@ thread_init (void)
   ASSERT (intr_get_level () == INTR_OFF);
 
   lock_init (&tid_lock);
+  lock_init(&lock_f);
   list_init (&ready_list);
   list_init (&all_list);
 
@@ -98,9 +107,6 @@ thread_init (void)
   init_thread (initial_thread, "main", PRI_DEFAULT);
   initial_thread->status = THREAD_RUNNING;
   initial_thread->tid = allocate_tid ();
-  initial_thread->priority = PRI_DEFAULT;
-  initial_thread->base_priority = PRI_DEFAULT;
-  initial_thread->waiting_lock =NULL;
 }
 
 /* Starts preemptive thread scheduling by enabling interrupts.
@@ -185,6 +191,17 @@ thread_create (const char *name, int priority,
   /* Initialize thread. */
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
+
+  /*Our implementation*/
+  //Initialize for the thread's child
+  t->thread_child = malloc(sizeof(struct child));
+  t->thread_child->tid=tid;
+  sema_init(&t->thread_child->sema,0);
+  list_push_back(&thread_current()->childs, &t->thread_child->child_elem);
+  /*Initialize the exit status by the MAX
+  Fix Bug*/
+  t->thread_child->store_exit=UINT32_MAX;
+  t->thread_child->isrun = false;
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
@@ -377,6 +394,34 @@ thread_exit (void)
      and schedule another process.  That process will destroy us
      when it calls thread_schedule_tail(). */
   intr_disable ();
+  /*Print the information */
+  printf("%s: exit(%d)\n",thread_name(),thread_current()->st_exit);
+  /*Sema up the semaphore for the process*/
+  thread_current()->thread_child->store_exit=thread_current()->st_exit;
+  sema_up(&thread_current()->thread_child->sema);
+  /*Close owned files*/
+  file_close(thread_current()->file_owned);
+
+  /**Close all the files*/
+  /*Our implementation for fixing the BUG that the file didn't close, PASS test file*/
+  struct list_elem *e;
+  struct list *files = &thread_current()->files;
+  while(!list_empty(files))
+  {
+    e = list_pop_front(files);
+    struct thread_file *f = list_entry (e, struct thread_file, file_elem);
+    acquire_lock_f();
+    file_close(f->file);
+    release_lock_f();
+    /*Remove the file in the list*/
+    list_remove(e);
+    /*Free the resource the file obtain*/
+    free(f);
+  }
+
+  /* Remove thread from all threads list, set our status to dying,
+     and schedule another process.  That process will destroy us
+     when it calls thread_schedule_tail(). */
   list_remove (&thread_current()->allelem);
   thread_current ()->status = THREAD_DYING;
   schedule ();
@@ -564,6 +609,19 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->base_priority = priority;
   t->magic = THREAD_MAGIC;
+  t->file_owned = NULL;
+  t->file_fd = 2;
+  if(t==initial_thread) t->parent=NULL;
+  /*Record the parent's thread*/
+  else t->parent = thread_current();
+  /*List initialization for lists*/
+  list_init(&t->childs);
+  list_init(&t->files);
+  /*Semaphore initialization for lists*/
+  sema_init(&t->sema,0);
+  t->success=true;
+  /*Initialize exit status to MAX*/
+  t->st_exit =UINT32_MAX;
   t->waiting_lock = NULL;
   list_init(&t->donations);
    
